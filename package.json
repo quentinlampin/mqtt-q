@@ -1,0 +1,26 @@
+{
+  "name": "mqtt-q",
+  "version": "1.0.0",
+  "description": "MQTT Client with Q promises",
+  "main": "mqtt-q.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "mqtt",
+    "q",
+    "promise"
+  ],
+  "author": "Quentin Lampin <quentin.lampin@orange.com>",
+  "license": "MPL-2.0",
+  "dependencies": {
+    "debug": "^2.2.0",
+    "mqtt": "^1.11.0",
+    "q": "^1.4.1"
+  },
+  "devDependencies": {
+    "grunt": "^1.0.1",
+    "grunt-eslint": "^18.1.0",
+    "grunt-jsdoc": "^2.1.0"
+  }
+}

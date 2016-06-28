@@ -1,0 +1,23 @@
+{
+  "name": "mqtt-q",
+  "description": "MQTT Client with Q promises",
+  "main": "mqtt-q.js",
+  "authors": [
+    "Quentin Lampin <quentin.lampin@gmail.com>"
+  ],
+  "license": "MPL-2.0",
+  "keywords": [
+    "mqtt",
+    "q",
+    "promise"
+  ],
+  "homepage": "https://github.com/quentinlampin/mqtt-q",
+  "moduleType": [],
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "test",
+    "tests"
+  ]
+}
