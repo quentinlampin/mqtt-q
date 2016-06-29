@@ -4,7 +4,8 @@
  * license: MPL-2.0
  */
 var mqtt = require('mqtt'),
-    Q = require('q');
+    Q = require('q'),
+    debug = require('debug')('mqtt-q');
 
 /**
  * MQTT client states
@@ -139,18 +140,27 @@ function SubscriptionError(configuration, error){
     return this;
 }
 
+function UnknownSubscriptionError(topic) {
+    Error.apply(this,
+        [ERROR.SUBSCRIPTION, 'unknown subscription: ' + topic]
+    );
+    return this;
+}
+
 /**
  * MQTT Client with promise
  * @param clientId
  * @param host
  * @param port
+ * @param options
  * @returns {MqttClientQ}
  * @constructor
  */
-function MqttClientQ(clientId, host, port){
+function MqttClientQ(clientId, host, port, options){
     this.clientId = clientId;
     this.host = host;
     this.port = port;
+    this.options = options;
     this.state = STATE.CONFIGURED;
     this.connection = CONNECTION.OFFLINE;
     this.subscriptions = {};
@@ -159,6 +169,7 @@ function MqttClientQ(clientId, host, port){
     this.callbacks[EVENT.OFFLINE] = undefined;
     this.callbacks[EVENT.RECONNECT] = undefined;
     this.callbacks[EVENT.MESSAGE] = undefined;
+    debug('mqtt client created with host target: ' + host + ':' + port);
     return this;
 }
 
@@ -189,7 +200,10 @@ MqttClientQ.prototype.resolvePromise_ = function(deferred, state, connection){
     if(connection){
         this.connection = connection;
     }
-    deferred.resolve(this);
+    if(deferred){
+        deferred.resolve(this);
+    }
+
 };
 
 /**
@@ -200,13 +214,37 @@ MqttClientQ.prototype.resolvePromise_ = function(deferred, state, connection){
  */
 MqttClientQ.prototype.rejectPromise_ = function(deferred, error){
     this.state = STATE.ERROR;
-    deferred.reject(error);
+    if(deferred){
+        deferred.reject(error);
+    }
+
+};
+
+/**
+ * called when the MQTT client is connected
+ * @param deferred
+ */
+MqttClientQ.prototype.onConnect = function(deferred){
+    var promises;
+
+    debug('mqtt client is connected to: ' + this.host + ':' + this.port);
+    this.connection = CONNECTION.ONLINE;
+    this.state = STATE.RUNNING;
+    promises = [];
+    Object.keys(this.subscriptions).forEach(function(subscription){
+        promises.push(this.subscribe(subscription, this.subscriptions[subscription]));
+    }.bind(this));
+    Q.all(promises).then(
+        this.resolvePromise_.bind(this, deferred, STATE.RUNNING, CONNECTION.ONLINE),
+        this.rejectPromise_.bind(this, deferred)
+    )
 };
 
 /**
  * called when the MQTT client goes offline
  */
 MqttClientQ.prototype.onOffline = function(){
+    debug('mqtt client is offline');
     this.connection = CONNECTION.OFFLINE;
     if(this.callbacks[EVENT.OFFLINE]){
         this.callbacks[EVENT.OFFLINE]();
@@ -217,7 +255,7 @@ MqttClientQ.prototype.onOffline = function(){
  * called when the MQTT client reconnects
  */
 MqttClientQ.prototype.onReconnect = function(){
-    this.connection = CONNECTION.ONLINE;
+    debug('mqtt client attempts a reconnection');
     if(this.callbacks[EVENT.RECONNECT]){
         this.callbacks[EVENT.RECONNECT]();
     }
@@ -228,10 +266,16 @@ MqttClientQ.prototype.onSubscription = function(deferred, configuration, error, 
         this.rejectPromise_(deferred, new SubscriptionError(configuration, error));
     }else{
         granted.forEach(function(subscription){
+            debug('mqtt client has subscribed to: ' + subscription.topic + '(' + subscription.qos + ')');
             this.subscriptions[String(subscription.topic)] = subscription.qos;
         }.bind(this));
         this.resolvePromise_(deferred, STATE.RUNNING);
     }
+};
+
+MqttClientQ.prototype.onUnsubscription = function(deferred, topic){
+        debug('mqtt client has unsubscribed from: ' + topic);
+        this.resolvePromise_(deferred, STATE.RUNNING);
 };
 
 /**
@@ -240,12 +284,14 @@ MqttClientQ.prototype.onSubscription = function(deferred, configuration, error, 
  * @param {String|Buffer} message - received message
  */
 MqttClientQ.prototype.onMessage = function(topic, message){
+    debug('mqtt client received a message from topic: ' + topic + ' message: ' + message);
     if(this.callbacks[EVENT.MESSAGE]){
         this.callbacks[EVENT.MESSAGE](topic, message);
     }
 };
 
 MqttClientQ.prototype.onEnd = function (deferred) {
+    debug('mqtt client has ended');
     this.subscriptions = {};
     this.resolvePromise_(deferred, STATE.HALTED, CONNECTION.OFFLINE);
 };
@@ -258,6 +304,7 @@ MqttClientQ.prototype.connect = function(){
     var deferred,
         configuration;
 
+    debug('mqtt client attempts to connect');
     deferred = Q.defer();
 
     switch(this.state){
@@ -266,6 +313,7 @@ MqttClientQ.prototype.connect = function(){
         case STATE.BUSY:
         case STATE.ERROR:
             this.rejectPromise_.bind(this, deferred, new CommandForbiddenError('connect', this.state));
+            return deferred.promise;
             break;
     }
 
@@ -274,10 +322,17 @@ MqttClientQ.prototype.connect = function(){
         host: this.host,
         port: this.port
     };
+    
+    if(this.options){
+        Object.keys(this.options).forEach(function(option){
+            configuration[option] = this.options[option]
+        }.bind(this));
+    }
+
     this.state = STATE.BUSY;
 
     this.inner_ = mqtt.connect(configuration)
-        .on('connect', this.resolvePromise_.bind(this, deferred, STATE.RUNNING, CONNECTION.ONLINE))
+        .on('connect', this.onConnect.bind(this, deferred))
         .on('error', this.rejectPromise_.bind(this, deferred, new ConnectionError(configuration)))
         .on('offline', this.onOffline.bind(this))
         .on('reconnect',this.onReconnect.bind(this))
@@ -301,10 +356,11 @@ MqttClientQ.prototype.end = function(force){
         case STATE.BUSY:
         case STATE.ERROR:
             this.rejectPromise_.bind(this, deferred, new CommandForbiddenError('end', this.state));
+            return deferred.promise;
             break;
     }
     this.state = STATE.BUSY;
-    this.inner_.end(force, this.onEnd().bind(this, deferred, STATE.HALTED, CONNECTION.OFFLINE));
+    this.inner_.end(force, this.onEnd.bind(this, deferred, STATE.HALTED, CONNECTION.OFFLINE));
     return deferred.promise;
 };
 
@@ -318,15 +374,16 @@ MqttClientQ.prototype.subscribe = function (topic, qos) {
     var deferred,
         configuration;
 
+    debug('mqtt client attempts to subscribe to topic: ' + topic + '(' + qos + ')');
     deferred = Q.defer();
 
     switch(this.state){
         case STATE.NOT_CONFIGURED:
         case STATE.CONFIGURED:
-        case STATE.RUNNING:
         case STATE.BUSY:
         case STATE.ERROR:
-            this.rejectPromise_.bind(this, deferred, new CommandForbiddenError('connect', this.state));
+            this.rejectPromise_.bind(this, deferred, new CommandForbiddenError('subscribe', this.state));
+            return deferred.promise;
             break;
     }
 
@@ -342,11 +399,40 @@ MqttClientQ.prototype.subscribe = function (topic, qos) {
             break;
         default:
             this.rejectPromise_.bind(this, deferred, new UnknownQOSError(qos));
+            return deferred.promise;
     }
 
     this.inner_.subscribe(configuration, this.onSubscription.bind(this, deferred, configuration));
     return deferred.promise;
 };
+
+MqttClientQ.prototype.unsubscribe = function (topic) {
+    var deferred;
+
+    debug('mqtt client attempts to unsubscribe from topic: ' + topic);
+    deferred = Q.defer();
+
+    switch(this.state){
+        case STATE.NOT_CONFIGURED:
+        case STATE.CONFIGURED:
+        case STATE.BUSY:
+        case STATE.ERROR:
+            debug('unsubscribe error: incompatible state: ' + this.state);
+            this.rejectPromise_.bind(this, deferred, new CommandForbiddenError('unsubscribe', this.state));
+            return deferred.promise;
+            break;
+    }
+
+    if(!this.subscriptions[topic]){
+        debug('unsubscribe error, unknown topic: ' + topic);
+        this.rejectPromise_.bind(this, deferred, new UnknownSubscriptionError(topic));
+        return deferred.promise;
+    }
+    this.inner_.unsubscribe(topic, this.onUnsubscription.bind(this, deferred, topic));
+    return deferred.promise;
+
+};
+
 
 /**
  * Publish message in given topic
@@ -367,6 +453,7 @@ MqttClientQ.prototype.publish = function(topic, message, options){
         case STATE.BUSY:
         case STATE.ERROR:
             this.rejectPromise_.bind(this, deferred, new CommandForbiddenError('publish', this.state));
+            return deferred.promise;
             break;
     }
     this.inner_.publish(topic, message, options ? options : {},
@@ -392,6 +479,7 @@ MqttClientQ.prototype.on = function(event, callback){
         case STATE.BUSY:
         case STATE.ERROR:
             this.rejectPromise_.bind(this, deferred, new CommandForbiddenError('on:'+event, this.state));
+            return deferred.promise;
             break;
     }
 
